@@ -117,7 +117,7 @@ if file_t1 is not None and file_t2 is not None:
 
             merged_df['变动比例'] = merged_df.apply(calc_pct, axis=1)
 
-            merged_df['参考净值'] = merged_df['基金净值_2'].fillna(merged_df['基金净值_1']).fillna(1.0)
+            merged_df['参考净值'] = merged_df['基金净值_1'].fillna(merged_df['基金净值_2']).fillna(1.0)
             merged_df['估算变动金额'] = (merged_df['份额变动'] * merged_df['参考净值']).round(2)
             merged_df['最新市值'] = (merged_df[col_curr] * merged_df['参考净值']).round(2)
 
