@@ -59,7 +59,7 @@ if file_t1 is not None and file_t2 is not None:
         required_cols = ['基金代码', '基金名称', '交易账户', '持有份额', '基金净值', '份额日期']
         if all(col in df1.columns for col in required_cols) and all(col in df2.columns for col in required_cols):
 
-            # ---------------- 新增：计算星期几的逻辑 ----------------
+            # 计算星期几的逻辑
             weekdays_cn = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日']
 
 
@@ -69,7 +69,6 @@ if file_t1 is not None and file_t2 is not None:
                     return default_name
                 date_val = dates.mode()[0]
                 try:
-                    # 将字符串转换为日期对象，并获取星期几的索引
                     dt = pd.to_datetime(date_val)
                     weekday_str = weekdays_cn[dt.weekday()]
                     return f"{date_val} {weekday_str}"
@@ -82,7 +81,6 @@ if file_t1 is not None and file_t2 is not None:
 
             col_prev = f'前期份额 ({date1_str})'
             col_curr = f'后期份额 ({date2_str})'
-            # --------------------------------------------------------
 
             df1_filtered = df1[df1['交易账户'].isin(TARGET_ACCOUNTS.keys())].copy()
             df2_filtered = df2[df2['交易账户'].isin(TARGET_ACCOUNTS.keys())].copy()
@@ -117,9 +115,14 @@ if file_t1 is not None and file_t2 is not None:
 
             merged_df['变动比例'] = merged_df.apply(calc_pct, axis=1)
 
+            # 使用早期净值(基金净值_1)作为确认日期的净值
             merged_df['参考净值'] = merged_df['基金净值_1'].fillna(merged_df['基金净值_2']).fillna(1.0)
             merged_df['估算变动金额'] = (merged_df['份额变动'] * merged_df['参考净值']).round(2)
-            merged_df['最新市值'] = (merged_df[col_curr] * merged_df['参考净值']).round(2)
+
+            # 最新市值必须用后期的净值_2来算，确保资产总额是最新的
+            merged_df['最新市值'] = (
+                        merged_df[col_curr] * merged_df['基金净值_2'].fillna(merged_df['基金净值_1']).fillna(
+                    1.0)).round(2)
 
             display_cols = ['账户名称', '基金代码', '基金名称', col_prev, col_curr, '份额变动', '变动比例', '最新市值',
                             '估算变动金额']
@@ -257,6 +260,78 @@ if file_t1 is not None and file_t2 is not None:
                     use_container_width=True,
                     hide_index=True
                 )
+
+            # ================= 新增功能：双账户结构对比 =================
+            st.divider()
+            st.subheader("⚖️ 账户结构对比：七十二变 vs 置换七十二变")
+            st.markdown(
+                "对比这两个账户在**最新一期**的持仓结构差异，基于单支基金的**最新市值占比**计算偏离差（置换七十二变占比 - 七十二变占比）。")
+
+            acc_old = '七十二变'
+            acc_new = '置换七十二变'
+
+            df_old = final_df[(final_df['账户名称'] == acc_old) & (final_df['最新市值'] > 0)].copy()
+            df_new = final_df[(final_df['账户名称'] == acc_new) & (final_df['最新市值'] > 0)].copy()
+
+            total_val_old = df_old['最新市值'].sum()
+            total_val_new = df_new['最新市值'].sum()
+
+            if total_val_old > 0 or total_val_new > 0:
+                df_old['七十二变_占比'] = df_old['最新市值'] / total_val_old if total_val_old > 0 else 0
+                df_new['置换七十二变_占比'] = df_new['最新市值'] / total_val_new if total_val_new > 0 else 0
+
+                df_old_sub = df_old[['基金代码', '基金名称', '最新市值', '七十二变_占比']].rename(
+                    columns={'最新市值': '七十二变_市值'})
+                df_new_sub = df_new[['基金代码', '基金名称', '最新市值', '置换七十二变_占比']].rename(
+                    columns={'最新市值': '置换七十二变_市值'})
+
+                comp_df = pd.merge(df_old_sub, df_new_sub, on=['基金代码', '基金名称'], how='outer').fillna(0)
+
+                comp_df['占比偏离差'] = comp_df['置换七十二变_占比'] - comp_df['七十二变_占比']
+
+                comp_df['abs_diff'] = comp_df['占比偏离差'].abs()
+                comp_df = comp_df.sort_values(by='abs_diff', ascending=False).drop(columns=['abs_diff']).reset_index(
+                    drop=True)
+
+
+                # 自定义结构对比表的样式
+                def style_compare_df(df):
+                    def color_diff(val):
+                        if pd.isna(val) or val == "":
+                            return ''
+                        if isinstance(val, (int, float)):
+                            if abs(val) < 0.0001:
+                                return ''
+                            if val > 0:
+                                return 'color: #FF4B4B; font-weight: bold'  # 红涨 (超配)
+                            elif val < 0:
+                                return 'color: #09AB3B; font-weight: bold'  # 绿跌 (低配)
+                        return ''
+
+                    # 核心新增：为两个占比列整列添加背景色高亮 (带有透明度的金色)
+                    def highlight_pct_cols(s):
+                        return ['background-color: rgba(255, 193, 7, 0.15)'] * len(s)
+
+                    format_dict = {
+                        '七十二变_市值': '{:,.2f}',
+                        '置换七十二变_市值': '{:,.2f}',
+                        '七十二变_占比': '{:.2%}',
+                        '置换七十二变_占比': '{:.2%}',
+                        '占比偏离差': '{:+.2%}'
+                    }
+
+                    # 组合渲染：同时应用文字颜色和背景高亮
+                    return (df.style
+                            .format(format_dict)
+                            .applymap(color_diff, subset=['占比偏离差'])
+                            .apply(highlight_pct_cols, subset=['七十二变_占比', '置换七十二变_占比'], axis=0))
+
+
+                # 核心调整：高度设为 800 以显示更多行
+                st.dataframe(style_compare_df(comp_df), use_container_width=True, height=800, hide_index=True)
+
+            else:
+                st.info("这两个账户在最新一期均无持仓数据，无法进行结构对比。")
 
         else:
             st.error("数据表格式不正确：未能找到'份额日期'或'基金净值'等列名。")
